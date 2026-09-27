@@ -1,0 +1,17 @@
+export type Role='STUDENT'|'COUNCIL_MEMBER'|'WELFARE_MANAGER'|'PRESIDENT_TEAM'|'SUPER_ADMIN';
+export type Status='PENDING_DROP_OFF'|'PENDING_REVIEW'|'STORED'|'CLAIM_PENDING'|'READY_FOR_PICKUP'|'RESERVED'|'RETURNED';
+export const labels:Record<Status,string>={PENDING_DROP_OFF:'실물 전달 대기',PENDING_REVIEW:'등록 확인 중',STORED:'보관 중',CLAIM_PENDING:'본인 확인 중',READY_FOR_PICKUP:'예약 가능',RESERVED:'예약 완료',RETURNED:'수령 완료'};
+export const roles:Record<Role,string>={STUDENT:'학생',COUNCIL_MEMBER:'학생회 임원',WELFARE_MANAGER:'학생복지부',PRESIDENT_TEAM:'회장단',SUPER_ADMIN:'최고 관리자'};
+export const categories=['전체','전자기기','지갑·카드','학용품','의류','액세서리','우산','물병·텀블러','책·교재','열쇠','기타'];
+export const locations=['본관 1층','본관 2층','본관 3층','별관 1층','별관 2층','급식실','기숙사','운동장','야외 농구장','체육관','E센터 1층','E센터 2층','E센터 3층','도서관','대극장','자판기 주변','기타'];
+export const pickupPlaces=['본관 중앙 현관','안전생활부실 앞'];
+export type Item={id:string;name:string;category:string;place:string;detail:string;date:string;time?:string;color:string;brand:string;description:string;status:Status;year:number;originYear:number;approvedAt:string;longOverdue:boolean;photo?:string;storage:string};
+export type Submission={id:string;name:string;category:string;place:string;detail:string;date:string;description:string;status:Status;resolution:string|null;feedback:string;photo:string;student:string;mine:boolean};
+export type Claim={id:string;itemId:string;name:string;student:string;mine:boolean;answer:string;status:string;code?:string;feedback:string;reservation?:Reservation;history:Reservation[]};
+export type Reservation={id:string;starts:string;ends:string;place:string;staff:string;status:string};
+export type Assignment=Reservation & {name:string;photo:string;storageNumber:string;student:string;studentNumber:string;code:string};
+export type Verification={id:string;name:string;number:string;status:string;created:string;deletion:string};
+export type State={configured:boolean;connected:boolean;unreadCount:number;error?:string;user?:{id:string;name:string;number:string;verification:string};canManage:boolean;canManageRoles:boolean;roleOptions:Role[];places:string[];candidates:{id:string;name:string;number:string;role:Role;head:boolean;year:number;active:boolean;claimed:boolean;activatedAt?:string}[];roleHistory:{id:string;name:string;role:Role;head:boolean;starts:string;ends:string;revoked?:string}[];locationSettings:{name:string;active:boolean}[];role:Role;verified:boolean;canVerify:boolean;canDeliver:boolean;year:number;years:number[];items:Item[];submissions:Submission[];claims:Claim[];slots:string[];availability:{id:string;starts:string;ends:string}[];assignments:Assignment[];verifications:Verification[];members:{id:string;name:string;number:string;role:string;head:boolean;deliver:boolean}[];notices:{id:string;text:string;read:boolean}[];audit:{id:string;text:string;created:string}[]};
+export const emptyState:State={configured:false,connected:false,unreadCount:0,canManage:false,canManageRoles:false,roleOptions:[],places:[],candidates:[],roleHistory:[],locationSettings:[],role:'STUDENT',verified:false,canVerify:false,canDeliver:false,year:0,years:[],items:[],submissions:[],claims:[],slots:[],availability:[],assignments:[],verifications:[],members:[],notices:[],audit:[]};
+export const isManager=(role:Role)=>['WELFARE_MANAGER','PRESIDENT_TEAM','SUPER_ADMIN'].includes(role);
+export const dateText=(s:string)=>new Date(s).toLocaleString('ko-KR',{timeZone:'Asia/Seoul',month:'long',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false});

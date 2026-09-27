@@ -1,0 +1,52 @@
+import {storageFixture} from './storage-fixture.mjs';
+process.on('uncaughtException',e=>{const i=Number(e.position||e.internalPosition)-1;console.error(e.message,'position',i,e.where||'',(e.query||e.internalQuery||'').slice(Math.max(0,i-180),i+100));process.exit(1)});
+import {PGlite} from '@electric-sql/pglite';import fs from 'node:fs';import assert from 'node:assert/strict';import {randomUUID} from 'node:crypto';
+const db=new PGlite();await db.exec('create role anon;create role authenticated;create role service_role bypassrls;create schema auth;create table auth.users(id uuid primary key);');
+await db.exec(storageFixture);
+for(const file of fs.readdirSync('supabase/migrations').filter(f=>f.endsWith('.sql')).sort())await db.exec(fs.readFileSync('supabase/migrations/'+file,'utf8'));
+const q=(sql,args=[])=>db.query(sql,args),act=(a,type,p)=>q('select yg_action($1,$2,$3::jsonb)',[a,type,JSON.stringify(p)]),state=async a=>(await q('select yg_state($1) s',[a])).rows[0].s;
+const fail=async(fn,message)=>{await assert.rejects(fn);console.log('blocked',message)};const year=2026;
+await q('select yg_initialize_year($1)',[year]);
+async function signup(name,number){const path=randomUUID()+'.webp';await q("insert into upload_jobs(bucket,object_path) values('student-verifications',$1)",[path]);const id=(await q('select yg_signup($1,$2,$3,$4) id',[name,number,'scrypt$test$hash',path])).rows[0].id;const vid=(await q('select id from student_verifications where user_id=$1',[id])).rows[0].id;return {id,vid,name,number};}
+const sup=await signup('초기운영자','20101');assert.equal((await state(sup.id)).canManage,false);
+await fail(()=>q('select yg_bootstrap_super($1,false)',[sup.id]),'bootstrap without physical identity check');
+await q('select yg_bootstrap_super($1,true)',[sup.id]);assert.equal((await state(sup.id)).role,'SUPER_ADMIN');assert.equal((await state(sup.id)).canVerify,false);
+const head=await signup('초기부장','20102');await act(sup.id,'ALLOWLIST_ADD',{name:head.name,number:head.number,role:'WELFARE_MANAGER',head:true});assert.equal((await state(head.id)).role,'STUDENT');
+await fail(()=>act(sup.id,'VERIFY',{id:head.vid,decision:'VERIFIED'}),'super web verification');
+await q('select yg_bootstrap_first_verifier($1,$2,true)',[sup.id,head.vid]);assert.equal((await state(head.id)).canVerify,true);
+await fail(()=>q('select yg_bootstrap_super($1,true)',[head.id]),'second initial super');
+assert.equal((await q('select delete_status from verification_uploads where verification_id=$1',[head.vid])).rows[0].delete_status,'DELETION_PENDING');
+assert.equal((await q('select claimed_user_id from admin_allowlist where student_number=$1',[head.number])).rows[0].claimed_user_id,head.id);
+const pres=await signup('회장테스트','20103');await act(sup.id,'ALLOWLIST_ADD',{name:pres.name,number:pres.number,role:'PRESIDENT_TEAM'});
+assert.equal((await state(pres.id)).canManage,false);await fail(()=>act(head.id,'ROLE',{userId:pres.id,role:'COUNCIL_MEMBER'}),'pending account role grant');
+await fail(()=>q('select yg_bootstrap_first_verifier($1,$2,true)',[sup.id,pres.vid]),'first verifier repeated');
+await act(head.id,'VERIFY',{id:pres.vid,decision:'VERIFIED'});assert.equal((await state(pres.id)).role,'PRESIDENT_TEAM');
+const student=await signup('학생테스트','20104');await act(head.id,'VERIFY',{id:student.vid,decision:'VERIFIED'});
+for(const [a,r]of [[student.id,'COUNCIL_MEMBER'],[head.id,'WELFARE_MANAGER'],[pres.id,'PRESIDENT_TEAM'],[sup.id,'SUPER_ADMIN']])await fail(()=>act(a,'ROLE',{userId:student.id,role:r}),'forged or excessive '+r+' grant');
+await act(head.id,'ROLE',{userId:student.id,role:'COUNCIL_MEMBER',deliver:true});assert.equal((await state(student.id)).canManage,true);assert.equal((await state(student.id)).canVerify,false);assert.equal((await state(student.id)).members.length,0);assert.equal((await state(student.id)).candidates,undefined);
+await fail(()=>act(student.id,'ROLE',{userId:head.id,role:'STUDENT'}),'council member revokes head');
+await act(pres.id,'ROLE',{userId:student.id,role:'WELFARE_MANAGER',head:false,deliver:true});assert.equal((await state(student.id)).canVerify,false);
+await fail(()=>act(head.id,'ROLE',{userId:student.id,role:'STUDENT'}),'welfare revokes welfare');
+await act(pres.id,'ROLE',{userId:student.id,role:'WELFARE_MANAGER',head:true,deliver:true});assert.equal((await state(student.id)).canVerify,true);
+await act(pres.id,'ROLE',{userId:student.id,role:'STUDENT'});assert.equal((await state(student.id)).canManage,false);assert.equal((await state(student.id)).verified,true);assert.equal((await q('select count(*)::int n from council_roles where user_id=$1',[student.id])).rows[0].n,3);
+await fail(()=>q("select yg_image($1,'verification',$2)",[student.id,pres.vid]),'revoked actor uses old verification authority');
+// Wrong name, disabled candidate and different year never activate roles.
+const wrong=await signup('다른이름','20105');await act(sup.id,'ALLOWLIST_ADD',{name:'원래이름',number:wrong.number,role:'WELFARE_MANAGER'});await act(head.id,'VERIFY',{id:wrong.vid,decision:'VERIFIED'});assert.equal((await state(wrong.id)).role,'STUDENT');
+const disabled=await signup('후보취소','20106');await act(sup.id,'ALLOWLIST_ADD',{name:disabled.name,number:disabled.number,role:'PRESIDENT_TEAM'});const cid=(await q('select id from admin_allowlist where student_number=$1',[disabled.number])).rows[0].id;await act(sup.id,'ALLOWLIST_DISABLE',{id:cid});await act(head.id,'VERIFY',{id:disabled.vid,decision:'VERIFIED'});assert.equal((await state(disabled.id)).role,'STUDENT');
+const rejected=await signup('거절후보','20107');await act(sup.id,'ALLOWLIST_ADD',{name:rejected.name,number:rejected.number,role:'PRESIDENT_TEAM'});await act(head.id,'VERIFY',{id:rejected.vid,decision:'REJECTED'});assert.equal((await state(rejected.id)).role,'STUDENT');assert.equal((await q('select claimed_user_id from admin_allowlist where student_number=$1',[rejected.number])).rows[0].claimed_user_id,null);
+await q("insert into school_years values($1,$2,$3,false)",[year+1,`${year+1}-03-01`,`${year+2}-02-28`]);
+const later=await signup('다음후보','20108');await q("insert into admin_allowlist(student_name,student_number,target_role,school_year) values($1,$2,'PRESIDENT_TEAM',$3)",[later.name,later.number,year+1]);await act(head.id,'VERIFY',{id:later.vid,decision:'VERIFIED'});assert.equal((await state(later.id)).role,'STUDENT');
+// Direct reception is atomic; normal student data remains available to admins.
+const path='direct.webp';await q("insert into upload_jobs(bucket,object_path,owner_id) values('item-photos',$1,$2)",[path,head.id]);
+const payload={name:'직접 접수 물품',category:'전자기기',place:'E센터 2층',detail:'계단 근처',date:'2026-09-22',time:'13:20',color:'검정',brand:'시험 브랜드',description:'공개 특징',storage:'DIRECT-01',path,received:true,photoChecked:true};
+await fail(()=>act(student.id,'DIRECT_REGISTER',payload),'student direct registration');await fail(()=>act(head.id,'DIRECT_REGISTER',{...payload,received:false}),'direct reception without actual item');
+await act(head.id,'DIRECT_REGISTER',payload);const item=(await state(student.id)).items[0];assert.equal(item.time,'13:20:00');assert.equal(item.storageNumber,undefined);assert.equal(item.name,payload.name);assert.equal((await state(head.id)).submissions[0].mine,true);
+assert.equal((await q("select count(*)::int n from audit_logs where action='분실물 직접 등록' and actor_id=$1 and entity_id=$2",[head.id,item.id])).rows[0].n,1);
+await act(head.id,'CLAIM',{itemId:item.id,answer:'관리자 본인의 물건 특징'});assert.equal((await state(head.id)).claims[0].mine,true);
+await q("insert into upload_jobs(bucket,object_path,owner_id) values('item-photos','duplicate.webp',$1)",[head.id]);const before=(await q('select count(*)::int n from item_submission_requests')).rows[0].n;
+await fail(()=>act(head.id,'DIRECT_REGISTER',{...payload,path:'duplicate.webp'}),'duplicate storage number atomic rollback');assert.equal((await q('select count(*)::int n from item_submission_requests')).rows[0].n,before);
+await fail(()=>act(head.id,'LOCATION_SET',{name:'운동장',active:false}),'welfare changes locations');await fail(()=>act(pres.id,'LOCATION_SET',{name:'임의 장소',active:true}),'new arbitrary location');await act(pres.id,'LOCATION_SET',{name:'운동장',active:false});assert.equal((await state(student.id)).places.includes('운동장'),false);await act(pres.id,'LOCATION_SET',{name:'운동장',active:true});
+await db.exec('set role anon');await fail(()=>q('select * from admin_allowlist'),'anon admin candidates');await fail(()=>q('select yg_apply_role($1,$2,$3,false,true,$4)',[student.id,student.id,'SUPER_ADMIN','forgery']),'anon private role helper');await db.exec('reset role;set role authenticated');await fail(()=>q('select yg_bootstrap_super($1,true)',[student.id]),'authenticated bootstrap');await db.exec('reset role');
+// Clean pending workflows, then verify no automatic next-year role inheritance.
+await q("update claim_requests set status='REJECTED' where status='PENDING'");await q('delete from admin_allowlist where school_year=$1',[year+1]);await q('delete from school_years where year=$1',[year+1]);await act(sup.id,'YEAR',{year:year+1});assert.equal((await state(head.id)).role,'STUDENT');assert.equal((await state(head.id)).verified,false);assert.equal((await q('select count(*)::int n from admin_allowlist where school_year=$1 and is_active',[year])).rows[0].n,0);assert.equal((await q('select current_year from items where id=$1',[item.id])).rows[0].current_year,year+1);
+console.log('PASS account bootstrap, candidate activation, role hierarchy/revocation/history, admin student functions, direct registration atomicity, place controls, RLS, annual expiry.');await db.close();

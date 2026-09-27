@@ -1,0 +1,3 @@
+import fs from 'node:fs/promises';import {randomBytes} from 'node:crypto';
+const source=await fs.readFile('.env.example','utf8');const result=source.replace(/^PIN_PEPPER=$/m,'PIN_PEPPER='+randomBytes(32).toString('hex')).replace(/^DATA_ENCRYPTION_KEY=$/m,'DATA_ENCRYPTION_KEY='+randomBytes(32).toString('hex')).replace(/^CRON_SECRET=$/m,'CRON_SECRET='+randomBytes(32).toString('hex'));
+try{await fs.writeFile('.env.local',result,{flag:'wx',mode:0o600});console.log('.env.local created. Add the Supabase URL, publishable key and server key. No secrets were printed.');}catch(e){if(e.code==='EEXIST'){console.error('.env.local already exists; kept unchanged. Compare required names with .env.example.');process.exitCode=1;}else throw e;}

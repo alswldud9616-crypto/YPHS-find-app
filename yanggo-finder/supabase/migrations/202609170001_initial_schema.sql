@@ -1,0 +1,49 @@
+-- Phase 0 schema baseline, NOT the finished production backend.
+-- All app tables are closed to anon/authenticated until Phase 2 policies exist.
+-- Apply only to a new development Supabase project after review.
+begin;
+create type public.item_status as enum ('PENDING_DROP_OFF','PENDING_REVIEW','STORED','CLAIM_PENDING','READY_FOR_PICKUP','RESERVED','RETURNED');
+create type public.app_role as enum ('STUDENT','COUNCIL_MEMBER','WELFARE_MANAGER','PRESIDENT_TEAM','SUPER_ADMIN');
+create table public.school_years(year integer primary key check(year between 2026 and 2200),starts_on date not null,ends_on date not null,is_current boolean not null default false,check(ends_on>starts_on));
+create unique index one_current_school_year on public.school_years(is_current) where is_current;
+create table public.users(id uuid primary key references auth.users(id),display_name text not null,created_at timestamptz not null default now());
+create table public.student_verifications(id uuid primary key default gen_random_uuid(),user_id uuid not null references public.users,school_year integer not null references public.school_years,student_number text not null check(student_number ~ '^[0-9]{5}$'),status text not null default 'ACCOUNT_PENDING' check(status in ('ACCOUNT_PENDING','VERIFIED','REJECTED','EXPIRED')),verified_at timestamptz,reviewed_by uuid references public.users,created_at timestamptz not null default now());
+create unique index verified_student_number on public.student_verifications(school_year,student_number) where status='VERIFIED';
+create unique index one_verified_identity on public.student_verifications(user_id,school_year) where status='VERIFIED';
+create unique index one_pending_verification on public.student_verifications(user_id,school_year) where status='ACCOUNT_PENDING';
+create table public.verification_uploads(id uuid primary key default gen_random_uuid(),verification_id uuid not null references public.student_verifications,object_path text unique,expires_at timestamptz not null,delete_status text not null default 'PENDING' check(delete_status in ('PENDING','DELETION_PENDING','DELETED')),deleted_at timestamptz,retry_count integer not null default 0);
+create table public.council_roles(id uuid primary key default gen_random_uuid(),user_id uuid not null references public.users,school_year integer not null references public.school_years,role public.app_role not null,can_deliver boolean not null default false,starts_at timestamptz not null,ends_at timestamptz not null,revoked_at timestamptz,granted_by uuid not null references public.users,check(ends_at>starts_at));
+create table public.categories(id uuid primary key default gen_random_uuid(),name text not null unique);
+create table public.locations(id uuid primary key default gen_random_uuid(),name text not null unique);
+create table public.item_submission_requests(id uuid primary key default gen_random_uuid(),submitter_id uuid not null references public.users,school_year integer not null references public.school_years,name text not null,category_id uuid not null references public.categories,found_location text not null,found_date date not null,found_time time,color text,brand text,public_description text,private_notes text,photo_path text not null,status public.item_status not null default 'PENDING_DROP_OFF',resolution text check(resolution in ('APPROVED','DUPLICATE','REJECTED','CANCELLED')),received_by uuid references public.users,received_at timestamptz,reviewed_by uuid references public.users,reviewed_at timestamptz,created_at timestamptz not null default now(),check(status in ('PENDING_DROP_OFF','PENDING_REVIEW','STORED')));
+create table public.items(id uuid primary key default gen_random_uuid(),submission_id uuid not null unique references public.item_submission_requests,origin_year integer not null references public.school_years,current_year integer not null references public.school_years,name text not null,category_id uuid not null references public.categories,location_id uuid references public.locations,found_location text not null,found_date date not null,color text,brand text,public_description text,status public.item_status not null default 'STORED',approved_by uuid not null references public.users,approved_at timestamptz not null default now(),returned_at timestamptz,created_at timestamptz not null default now(),check(status not in ('PENDING_DROP_OFF','PENDING_REVIEW')));
+create table public.item_private_details(item_id uuid primary key references public.items,storage_number text not null,storage_location text not null default '본관 중앙 현관 분실물함',identity_notes text,slot_released_at timestamptz);
+create unique index occupied_storage_number on public.item_private_details(storage_number) where slot_released_at is null;
+create table public.item_images(id uuid primary key default gen_random_uuid(),item_id uuid not null references public.items,object_path text not null unique,is_approved_public boolean not null default false,created_at timestamptz not null default now());
+create table public.item_history(id uuid primary key default gen_random_uuid(),item_id uuid not null references public.items,school_year integer not null references public.school_years,actor_id uuid not null references public.users,event text not null,from_status public.item_status,to_status public.item_status,created_at timestamptz not null default now());
+create table public.claim_requests(id uuid primary key default gen_random_uuid(),item_id uuid not null references public.items,claimant_id uuid not null references public.users,school_year integer not null references public.school_years,private_answer text not null,status text not null default 'PENDING' check(status in ('PENDING','MORE_INFO','APPROVED','REJECTED','WITHDRAWN','EXPIRED','RETURNED')),reviewed_by uuid references public.users,reviewed_at timestamptz,pickup_code_hash text,pickup_code_ciphertext text,pickup_code_expires_at timestamptz,created_at timestamptz not null default now());
+create unique index one_approved_claim_per_item on public.claim_requests(item_id) where status='APPROVED';
+create unique index one_open_claim_per_student on public.claim_requests(item_id,claimant_id) where status in ('PENDING','MORE_INFO','APPROVED');
+create table public.staff_availability(id uuid primary key default gen_random_uuid(),staff_id uuid not null references public.users,school_year integer not null references public.school_years,starts_at timestamptz not null,ends_at timestamptz not null,cancelled_at timestamptz,check(ends_at>starts_at));
+create table public.pickup_slots(id uuid primary key default gen_random_uuid(),availability_id uuid not null references public.staff_availability,staff_id uuid not null references public.users,school_year integer not null references public.school_years,starts_at timestamptz not null,ends_at timestamptz not null,unique(staff_id,starts_at),check(ends_at=starts_at+interval '10 minutes'));
+create table public.pickup_schedules(id uuid primary key default gen_random_uuid(),claim_id uuid not null references public.claim_requests,slot_id uuid not null references public.pickup_slots,status text not null default 'RESERVED' check(status in ('RESERVED','CANCELLED','NO_SHOW','COMPLETED')),completed_by uuid references public.users,completed_at timestamptz,cancelled_at timestamptz,created_at timestamptz not null default now());
+create unique index one_active_slot_reservation on public.pickup_schedules(slot_id) where status in ('RESERVED','COMPLETED');
+create unique index one_active_claim_reservation on public.pickup_schedules(claim_id) where status in ('RESERVED','COMPLETED');
+create table public.notifications(id uuid primary key default gen_random_uuid(),recipient_id uuid not null references public.users,school_year integer not null references public.school_years,type text not null,message text not null,reference_id uuid,read_at timestamptz,created_at timestamptz not null default now());
+create index notifications_recipient on public.notifications(recipient_id,created_at desc);
+create table public.audit_logs(id uuid primary key default gen_random_uuid(),actor_id uuid not null references public.users,school_year integer not null references public.school_years,action text not null,entity_type text not null,entity_id uuid,request_id uuid not null unique,created_at timestamptz not null default now());
+create table public.year_transfers(id uuid primary key default gen_random_uuid(),item_id uuid not null references public.items,from_year integer not null references public.school_years,to_year integer not null references public.school_years,actor_id uuid not null references public.users,created_at timestamptz not null default now(),unique(item_id,from_year,to_year),check(to_year>from_year));
+create table public.notification_outbox(id uuid primary key default gen_random_uuid(),notification_id uuid not null unique references public.notifications,delivered_at timestamptz,attempts integer not null default 0,next_attempt_at timestamptz not null default now());
+-- RLS is deliberately closed. No operational policies or grants yet.
+do $$
+declare t text;
+begin
+ foreach t in array array['school_years','users','student_verifications','verification_uploads','council_roles','categories','locations','item_submission_requests','items','item_private_details','item_images','item_history','claim_requests','staff_availability','pickup_slots','pickup_schedules','notifications','audit_logs','year_transfers','notification_outbox'] loop
+  execute format('alter table public.%I enable row level security',t);
+  execute format('revoke all on table public.%I from anon, authenticated',t);
+ end loop;
+end $$;
+commit;
+-- Phase 2 must add tested SELECT policies, server-only transition functions,
+-- role bootstrap, private Storage buckets, image cleanup jobs, outbox workers,
+-- availability overlap constraints, cross-year validation and atomic RPCs.

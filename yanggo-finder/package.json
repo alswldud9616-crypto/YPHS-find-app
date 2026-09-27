@@ -1,0 +1,42 @@
+{
+  "name": "yanggo-finder",
+  "version": "0.4.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --hostname 0.0.0.0",
+    "build": "next build --webpack",
+    "start": "next start --hostname 0.0.0.0",
+    "typecheck": "tsc --noEmit",
+    "test": "node tests/crypto.cjs && node tests/database.mjs && node tests/account-roles.mjs && node tests/connection.mjs",
+    "maintenance": "node --env-file=.env.local scripts/maintenance.mjs",
+    "bootstrap": "node --env-file=.env.local scripts/bootstrap.mjs",
+    "setup:env": "node scripts/setup-env.mjs",
+    "db:check": "node --env-file=.env.local scripts/check-supabase.mjs",
+    "db:bundle": "node scripts/bundle-sql.mjs",
+    "build:public": "npm run build && node scripts/build-public.mjs"
+  },
+  "dependencies": {
+    "@fontsource/gowun-dodum": "5.3.0",
+    "@fontsource/noto-sans-kr": "5.3.0",
+    "@supabase/supabase-js": "2.116.0",
+    "lucide-react": "1.31.0",
+    "next": "16.3.5",
+    "react": "19.2.6",
+    "react-dom": "19.2.6",
+    "sharp": "0.35.4"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.8",
+    "@tailwindcss/postcss": "4.2.1",
+    "@types/node": "22.19.19",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "esbuild": "0.28.2",
+    "playwright": "1.63.0",
+    "tailwindcss": "4.2.1",
+    "typescript": "5.9.3"
+  },
+  "engines": {
+    "node": "24.x"
+  }
+}

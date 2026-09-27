@@ -1,0 +1,57 @@
+import {storageFixture} from './storage-fixture.mjs';
+process.on('uncaughtException',e=>{console.error(e.message,e.where||'',e.query||'');process.exit(1)});
+import {PGlite} from '@electric-sql/pglite';
+import fs from 'node:fs';import assert from 'node:assert/strict';import {randomUUID} from 'node:crypto';
+const db=new PGlite();await db.exec('create role anon; create role authenticated; create role service_role bypassrls; create schema auth; create table auth.users(id uuid primary key);');
+await db.exec(storageFixture);
+for(const name of fs.readdirSync('supabase/migrations').filter(n=>n.endsWith('.sql')).sort()){await db.exec(fs.readFileSync('supabase/migrations/'+name,'utf8'));console.log('migration OK',name);}
+const q=(sql,args=[])=>db.query(sql,args);const action=(id,type,p)=>q('select yg_action($1,$2,$3::jsonb) result',[id,type,JSON.stringify(p)]);
+const mustFail=async(fn,text)=>{await assert.rejects(fn);console.log('blocked',text)};
+const ids={};for(const name of ['student','other','head','welfare','president','admin','staff'])ids[name]=randomUUID();
+const now=new Date();const year=now.getUTCMonth()<2?now.getUTCFullYear()-1:now.getUTCFullYear();
+await q("insert into school_years values($1,$2,$3,true)",[year,`${year}-03-01`,`${year+1}-02-28`]);
+let n=20101;for(const [name,id]of Object.entries(ids)){await q('insert into users(id,display_name) values($1,$2)',[id,name]);await q("insert into student_verifications(user_id,school_year,student_number,status) values($1,$2,$3,'VERIFIED')",[id,year,String(n++)]);}
+for(const [name,role,head,deliver]of [['head','WELFARE_MANAGER',true,true],['welfare','WELFARE_MANAGER',false,true],['president','PRESIDENT_TEAM',false,true],['admin','SUPER_ADMIN',false,false],['staff','COUNCIL_MEMBER',false,true]])await q('insert into council_roles(user_id,school_year,role,is_head,can_deliver,starts_at,ends_at,granted_by) values($1,$2,$3,$4,$5,now()-interval \'1 day\',now()+interval \'365 days\',$1)',[ids[name],year,role,head,deliver]);
+const state=async(id)=> (await q('select yg_state($1) s',[id])).rows[0].s;
+for(const name of ['student','staff','welfare','admin'])assert.equal((await state(ids[name])).canVerify,false);
+assert.equal((await state(ids.head)).canVerify,true);assert.equal((await state(ids.president)).canVerify,true);
+await q("insert into upload_jobs(bucket,object_path,owner_id) values('item-photos','test.webp',$1)",[ids.student]);
+await mustFail(()=>action(ids.other,'SUBMIT',{name:'테스트',category:'학용품',place:'본관 2층',date:now.toISOString().slice(0,10),path:'test.webp'}),'another student upload path');
+await action(ids.student,'SUBMIT',{name:'테스트 물품',category:'학용품',place:'본관 2층',detail:'중앙계단 근처',date:now.toISOString().slice(0,10),description:'연필',path:'test.webp'});
+let s=await state(ids.student);const submission=s.submissions[0].id;assert.equal(s.items.length,0);assert.equal((await state(ids.other)).submissions.length,0);
+await mustFail(()=>action(ids.student,'PUBLISH',{id:submission,storage:'A-01',photoChecked:true}),'student publish');
+await mustFail(()=>action(ids.head,'PUBLISH',{id:submission,storage:'A-01',photoChecked:true}),'publish before physical receipt');
+await action(ids.head,'RECEIVE',{id:submission});await action(ids.head,'PUBLISH',{id:submission,storage:'A-01',photoChecked:true});
+s=await state(ids.student);const item=s.items[0].id;assert.equal(s.items[0].storageNumber,undefined);assert.equal(s.items[0].slot,undefined);
+await q("update items set approved_at=now()-interval '14 days' where id=$1",[item]);assert.equal((await state(ids.student)).items[0].longOverdue,true);
+await action(ids.student,'CLAIM',{itemId:item,answer:'내부 별 스티커'});await action(ids.other,'CLAIM',{itemId:item,answer:'안쪽 이름 표시'});const claim=(await state(ids.student)).claims[0].id;assert.equal((await state(ids.student)).claims.length,1);assert.equal((await state(ids.staff)).claims.length,0);
+await action(ids.head,'DECIDE',{id:claim,decision:'APPROVED',codeHash:'test-hash',codeEncrypted:'encrypted'});
+assert.equal((await state(ids.other)).claims[0].status,'REJECTED');assert.equal((await state(ids.student)).items[0].longOverdue,false);
+const t=new Date(Math.ceil((Date.now()+3600000)/600000)*600000).toISOString(),end=new Date(new Date(t).getTime()+600000).toISOString();
+for(const who of ['staff','welfare'])await action(ids[who],'AVAILABILITY',{starts:t,ends:end});
+await mustFail(()=>action(ids.staff,'AVAILABILITY',{starts:t,ends:end}),'overlapping availability');
+s=await state(ids.student);assert.equal(s.slots.length,1);assert.equal(typeof s.slots[0],'string');assert.equal(s.availability.length,0);
+await action(ids.student,'RESERVE',{id:claim,starts:t,place:'안전생활부실 앞'});
+s=await state(ids.student);let reservation=s.claims[0].reservation.id;assert.equal(s.claims[0].reservation.staff,'welfare');assert.equal((await state(ids.staff)).assignments.length,0);assert.equal((await state(ids.welfare)).assignments.length,1);
+await mustFail(()=>action(ids.student,'RESERVE',{id:claim,starts:t,place:'본관 중앙 현관'}),'duplicate reservation');
+await mustFail(()=>action(ids.staff,'COMPLETE',{id:reservation,codeHash:'test-hash',handed:true}),'unassigned staff completion');
+await mustFail(()=>action(ids.welfare,'NO_SHOW',{id:reservation}),'premature no-show');
+await q("update pickup_slots set starts_at=now()-interval '20 minutes',ends_at=now()-interval '10 minutes' where id=(select slot_id from pickup_schedules where id=$1)",[reservation]);
+await action(ids.welfare,'NO_SHOW',{id:reservation});s=await state(ids.student);assert.equal(s.claims[0].reservation,null);assert.equal(s.claims[0].history[0].status,'NO_SHOW');
+await action(ids.student,'RESERVE',{id:claim,starts:t,place:'본관 중앙 현관'});s=await state(ids.student);reservation=s.claims[0].reservation.id;assert.equal(s.claims[0].reservation.staff,'staff');
+await mustFail(()=>action(ids.staff,'COMPLETE',{id:reservation,codeHash:'wrong',handed:true}),'wrong pickup code');
+await action(ids.staff,'COMPLETE',{id:reservation,codeHash:'test-hash',handed:true});s=await state(ids.student);assert.equal(s.claims[0].status,'RETURNED');assert.equal(s.claims[0].codeEncrypted,null);assert.equal(s.items[0].status,'RETURNED');
+await mustFail(()=>action(ids.staff,'COMPLETE',{id:reservation,codeHash:'test-hash',handed:true}),'pickup code reuse');
+// Enrollment approval queues deletion in the same transaction.
+const pending=randomUUID();await q("insert into upload_jobs(bucket,object_path) values('student-verifications','card.webp')");const signed=(await q("select yg_signup('가입학생','20999','scrypt$salt$hash','card.webp') id")).rows[0].id;
+const vid=(await q('select id from student_verifications where user_id=$1',[signed])).rows[0].id;
+for(const who of ['staff','welfare','admin'])await mustFail(()=>action(ids[who],'VERIFY',{id:vid,decision:'VERIFIED'}),who+' verification approval');
+await mustFail(()=>q("select yg_image($1,'verification',$2)",[ids.staff,vid]),'staff card image');
+assert.equal((await q("select yg_image($1,'verification',$2) f",[ids.head,vid])).rows[0].f.path,'card.webp');
+await action(ids.head,'VERIFY',{id:vid,decision:'VERIFIED'});assert.equal((await q('select delete_status from verification_uploads where verification_id=$1',[vid])).rows[0].delete_status,'DELETION_PENDING');assert.equal((await q("select yg_image($1,'verification',$2) f",[ids.head,vid])).rows[0].f.path,null);
+for(let i=0;i<5;i++)assert.equal((await q("select yg_rate_limit('identity-test',5) ok")).rows[0].ok,true);assert.equal((await q("select yg_rate_limit('identity-test',5) ok")).rows[0].ok,false);
+await db.exec('set role anon');await mustFail(()=>q('select * from users'),'anon direct table');await mustFail(()=>q('select yg_state($1)',[ids.student]),'anon rpc');await db.exec('reset role;set role authenticated');await mustFail(()=>q('select * from claim_requests'),'authenticated direct private table');await mustFail(()=>action(ids.admin,'YEAR',{year:year+1}),'authenticated forged actor');await db.exec('reset role');
+// All roles are expired on annual transfer, with returned history retained.
+await action(ids.admin,'YEAR',{year:year+1});assert.equal((await state(ids.admin)).role,'STUDENT');assert.equal((await state(ids.student)).verified,false);assert.equal((await q('select count(*)::int n from items')).rows[0].n,1);
+console.log('PASS: DB migrations, permissions, private data, physical receipt, approval, allocation, no-show/rebooking, one-time code, deletion queue, rate limits, RLS, annual expiry.');
+await db.close();
