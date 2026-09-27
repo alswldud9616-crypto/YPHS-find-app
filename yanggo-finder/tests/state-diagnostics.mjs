@@ -15,7 +15,7 @@ const ok=(data)=>Response.json(data);
 globalThis.fetch=async(input,init)=>{
  const url=new URL(input);const headers=new Headers(init.headers);
  assert.equal(headers.get('apikey'),'sb_secret_test');
- assert.equal(headers.has('authorization'),false);
+ assert.equal(headers.get('authorization'),'Bearer sb_secret_test');
  calls.push(url.pathname);
  if(url.pathname.endsWith('/rpc/yg_connection_health')){
   assert.equal(headers.get('content-profile'),'public');
@@ -57,8 +57,8 @@ try{
   const log=JSON.parse(logs[0]);assert.equal(log.requestId,data.diagnostic.requestId);
   assert.match(data.error,/운영 서버|서버 연결|데이터베이스/);
   if(name==='health')assert.equal(log.upstreamStatus,403);
-  if(name==='fetch_throw'){assert.equal(log.failureKind,'sdk_error');assert.equal(log.sdkStatus,0);assert.equal(log.upstreamStatus,null);assert.equal(log.fetchStarted,true);assert.equal(log.fetchResponseReceived,false);assert.equal(log.transportFailure.isTypeError,true);assert.equal(log.transportFailure.fetchFailed,true);assert.equal(log.transportFailure.networkCode,'ENOTFOUND');}
-  if(name==='health_shape'){assert.equal(log.failureKind,'health_shape');assert.equal(log.fetchResponseReceived,true);assert.equal(log.sdkStatus,200);}
+  if(name==='fetch_throw'){assert.equal(log.sdkStatus,0);assert.equal(log.upstreamStatus,null);assert.equal('fetchStarted' in log,false);}
+  if(name==='health_shape'){assert.equal(log.code,'HEALTH_SHAPE');}
   if(name==='unknown_code')assert.equal(log.code,'UNCLASSIFIED');
   if(name==='config')assert.equal(calls.length,0);
   return data;

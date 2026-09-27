@@ -3,7 +3,6 @@ import {NextResponse} from 'next/server';
 import {configured,rpc,db,ready} from '@/lib/server/db';
 import {actor} from '@/lib/server/auth';
 import {decrypt} from '@/lib/server/crypto';
-import {healthDiagnostic} from '@/lib/server/health-probe';
 import {emptyState} from '@/lib/model';
 
 export const dynamic='force-dynamic';
@@ -13,11 +12,12 @@ type Stage='config'|'health'|'state'|'postprocess';
 // request URL, cookies, headers, environment, RPC arguments, or returned rows.
 const SAFE_CODES=new Set(['42501','42883','42P01','42703','22P02','22023','57014','53300','08006',
  'PGRST000','PGRST001','PGRST002','PGRST003','PGRST106','PGRST202','PGRST203','PGRST301','PGRST302','PGRST303',
- 'CONFIG_INVALID','HEALTH_NOT_READY','STATE_SHAPE','ROW_SHAPE']);
+ 'CONFIG_INVALID','HEALTH_SHAPE','HEALTH_NOT_READY','STATE_SHAPE','ROW_SHAPE']);
 function safeError(error:unknown){
  const e=error&&typeof error==='object'?error as {code?:unknown;status?:unknown}:{};
  return {
   code:typeof e.code==='string'&&SAFE_CODES.has(e.code)?e.code:'UNCLASSIFIED',
+  sdkStatus:typeof e.status==='number'&&Number.isInteger(e.status)&&e.status>=0&&e.status<=599?e.status:null,
   upstreamStatus:typeof e.status==='number'&&Number.isInteger(e.status)&&e.status>=100&&e.status<=599?e.status:null
  };
 }
@@ -29,10 +29,10 @@ export async function GET(req:Request){
  let stage:Stage='config';
  let step='environment';
  let isConfigured=false;
- const headers={'Cache-Control':'no-store','Content-Type':'application/json; charset=utf-8','X-Yanggo-Diagnostics':'state-v2'};
+ const headers={'Cache-Control':'no-store','Content-Type':'application/json; charset=utf-8','X-Yanggo-Diagnostics':'state-v3-native'};
  function failure(error:unknown,message:string,status=503){
-  const diagnostic={version:'state-v2',requestId,stage,step};
-  console.error(JSON.stringify({event:'yanggo.state.failed',...diagnostic,...safeError(error),...healthDiagnostic(error)}));
+  const diagnostic={version:'state-v3-native',requestId,stage,step};
+  console.error(JSON.stringify({event:'yanggo.state.failed',...diagnostic,...safeError(error)}));
   return NextResponse.json({...emptyState,configured:isConfigured,connected:false,
    error:message,errorCode:'STATE_UNAVAILABLE',diagnostic},{status,headers});
  }

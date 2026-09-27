@@ -9,13 +9,16 @@ assert(connectionConfig({...env,SUPABASE_SERVICE_ROLE_KEY:'sb_secret_other'}).is
 assert.equal(connectionConfig({...env,SUPABASE_SERVICE_ROLE_KEY:env.SUPABASE_SECRET_KEY}).issues.length,0);
 assert(connectionConfig({...env,SUPABASE_SECRET_KEY:'sb_publishable_wrong'}).issues.length);
 assert(connectionConfig({...env,SUPABASE_SECRET_KEY:'not-a-secret-key'}).issues.length);
-// Verify the installed SDK sends new keys as apikey, not JWT Bearer tokens.
+// Isolated native-SDK transport test. Production does not inject fetch.
 const {createServerClient}=await import('../lib/server/supabase-client.mjs');
 for(const key of [env.SUPABASE_SECRET_KEY,env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY]){
  let called=false;
- const client=createServerClient(env.NEXT_PUBLIC_SUPABASE_URL,key,{fetch:async(_url,init)=>{called=true;const h=new Headers(init.headers);assert.equal(h.get('apikey'),key);assert.equal(h.has('authorization'),false);return new Response('true',{headers:{'content-type':'application/json'}});}});
+ const savedFetch=globalThis.fetch;globalThis.fetch=async(_url,init)=>{called=true;const h=new Headers(init.headers);assert.equal(h.get('apikey'),key);assert.equal(h.get('authorization'),'Bearer '+key);return new Response('true',{headers:{'content-type':'application/json'}});};
+ const client=createServerClient(' '+env.NEXT_PUBLIC_SUPABASE_URL+'\n',' '+key+'\n');
+ try{
  const result=await client.rpc('yg_connection_health');assert.equal(result.error,null);assert(called);
  called=false;const removal=await client.storage.from('student-verifications').remove(['test-only.webp']);assert.equal(removal.error,null);assert(called);
+ }finally{globalThis.fetch=savedFetch;}
 }
 const db=new PGlite();await db.exec('create role anon;create role authenticated;create role service_role bypassrls;create schema auth;create table auth.users(id uuid primary key);');await db.exec(storageFixture);await db.exec(fs.readFileSync('supabase/production-fresh.sql','utf8'));
 const q=(sql,p=[])=>db.query(sql,p);let health=(await q('select yg_connection_health() h')).rows[0].h;assert.equal(health.version,8);assert.equal(health.rlsReady,true);assert.equal(health.storageReady,true);assert.equal(health.year,null);
