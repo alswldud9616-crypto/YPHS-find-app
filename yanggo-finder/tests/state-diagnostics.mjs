@@ -19,6 +19,8 @@ globalThis.fetch=async(input,init)=>{
  calls.push(url.pathname);
  if(url.pathname.endsWith('/rpc/yg_connection_health')){
   assert.equal(headers.get('content-profile'),'public');
+  if(scenario==='fetch_throw')throw new TypeError('fetch failed '+marker,{cause:{code:'ENOTFOUND',hostname:marker}});
+  if(scenario==='health_shape')return ok(null);
   if(scenario==='health')return Response.json({code:'42501',message:marker,details:marker,hint:marker},{status:403});
   if(scenario==='unknown_code')return Response.json({code:marker,message:marker},{status:401});
   return ok({version:8,year:2026,rlsReady:true,storageReady:scenario!=='health_false'});
@@ -55,14 +57,18 @@ try{
   const log=JSON.parse(logs[0]);assert.equal(log.requestId,data.diagnostic.requestId);
   assert.match(data.error,/운영 서버|서버 연결|데이터베이스/);
   if(name==='health')assert.equal(log.upstreamStatus,403);
+  if(name==='fetch_throw'){assert.equal(log.failureKind,'sdk_error');assert.equal(log.sdkStatus,0);assert.equal(log.upstreamStatus,null);assert.equal(log.fetchStarted,true);assert.equal(log.fetchResponseReceived,false);assert.equal(log.transportFailure.isTypeError,true);assert.equal(log.transportFailure.fetchFailed,true);assert.equal(log.transportFailure.networkCode,'ENOTFOUND');}
+  if(name==='health_shape'){assert.equal(log.failureKind,'health_shape');assert.equal(log.fetchResponseReceived,true);assert.equal(log.sdkStatus,200);}
   if(name==='unknown_code')assert.equal(log.code,'UNCLASSIFIED');
   if(name==='config')assert.equal(calls.length,0);
   return data;
  }
  await run('success');
- await run('health','health','health_rpc');
- await run('unknown_code','health','health_rpc');
- await run('health_false','health','health_rpc');
+ await run('fetch_throw','health','health_rpc_response');
+ await run('health_shape','health','health_shape');
+ await run('health','health','health_rpc_response');
+ await run('unknown_code','health','health_rpc_response');
+ await run('health_false','health','health_shape');
  await run('state','state','state_rpc');
  await run('session','state','session');
  await run('shape','postprocess','state_shape');

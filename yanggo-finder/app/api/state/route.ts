@@ -3,6 +3,7 @@ import {NextResponse} from 'next/server';
 import {configured,rpc,db,ready} from '@/lib/server/db';
 import {actor} from '@/lib/server/auth';
 import {decrypt} from '@/lib/server/crypto';
+import {healthDiagnostic} from '@/lib/server/health-probe';
 import {emptyState} from '@/lib/model';
 
 export const dynamic='force-dynamic';
@@ -28,10 +29,10 @@ export async function GET(req:Request){
  let stage:Stage='config';
  let step='environment';
  let isConfigured=false;
- const headers={'Cache-Control':'no-store','Content-Type':'application/json; charset=utf-8','X-Yanggo-Diagnostics':'state-v1'};
+ const headers={'Cache-Control':'no-store','Content-Type':'application/json; charset=utf-8','X-Yanggo-Diagnostics':'state-v2'};
  function failure(error:unknown,message:string,status=503){
-  const diagnostic={version:'state-v1',requestId,stage,step};
-  console.error(JSON.stringify({event:'yanggo.state.failed',...diagnostic,...safeError(error)}));
+  const diagnostic={version:'state-v2',requestId,stage,step};
+  console.error(JSON.stringify({event:'yanggo.state.failed',...diagnostic,...safeError(error),...healthDiagnostic(error)}));
   return NextResponse.json({...emptyState,configured:isConfigured,connected:false,
    error:message,errorCode:'STATE_UNAVAILABLE',diagnostic},{status,headers});
  }
@@ -39,8 +40,8 @@ export async function GET(req:Request){
   isConfigured=configured();
   if(!isConfigured)return failure({code:'CONFIG_INVALID'},'운영 서버 연결을 준비하고 있어요.',200);
 
-  stage='health';step='health_rpc';
-  if(!await ready())return failure({code:'HEALTH_NOT_READY'},'데이터베이스·저장소·학년도 설정을 확인하고 있어요.');
+  stage='health';step='health_client';
+  if(!await ready(next=>{step=next;}))return failure({code:'HEALTH_NOT_READY'},'데이터베이스·저장소·학년도 설정을 확인하고 있어요.');
 
   stage='state';step='session';
   const id=await actor(); // No yg_session cookie => null, no app_sessions query.
