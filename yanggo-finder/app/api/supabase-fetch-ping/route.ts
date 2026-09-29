@@ -1,4 +1,4 @@
-// Temporary network diagnostic. Keep this route independent of the Supabase SDK.
+// Temporary diagnostic: native fetch only. Remove after investigating production.
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
@@ -26,34 +26,102 @@ function safeNetworkCode(error: unknown) {
 }
 
 export async function GET() {
-  let fetchStarted = false;
-  let responseReceived = false;
-  try {
-    const url = (process.env.NEXT_PUBLIC_SUPABASE_URL ?? '').trim();
-    const key = (process.env.SUPABASE_SECRET_KEY ?? '').trim();
-    if (!url || !key) {
-      return Response.json({ok: false, phase: 'config', fetchStarted,
-        responseReceived, httpStatus: null, errorName: 'MissingConfig', networkCode: null},
-      {status: 503, headers: responseHeaders});
-    }
+  const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? '';
+  const rawKey = process.env.SUPABASE_SECRET_KEY ?? '';
+  const url = rawUrl.trim();
+  const secret = rawKey.trim();
 
-    fetchStarted = true;
-    const response = await fetch(`${url.replace(/\/+$/, '')}/rest/v1/rpc/yg_connection_health`, {
-      method: 'POST',
-      headers: {apikey: key, 'Content-Type': 'application/json'},
-      body: '{}',
-      cache: 'no-store',
-      redirect: 'manual',
-    });
-    responseReceived = true;
-    // Do not read or return the RPC response body.
-    return Response.json({ok: response.ok, phase: 'http_response', fetchStarted,
-      responseReceived, httpStatus: response.status, errorName: null, networkCode: null},
-    {status: response.ok ? 200 : 502, headers: responseHeaders});
+  // Inspect the original value; length and prefix describe the trimmed request value.
+  const result = {
+    ok: false,
+    phase: 'url_parse',
+    urlParseOk: false,
+    isHttps: false,
+    urlHasUsername: false,
+    urlHasPassword: false,
+    urlHasPath: false,
+    urlHasQuery: false,
+    urlHasHash: false,
+    secretPresent: secret.length > 0,
+    secretHasExpectedPrefix: secret.startsWith('sb_secret_'),
+    secretLength: secret.length,
+    secretChangedByTrim: rawKey !== secret,
+    secretHasNonAscii: /[^\x00-\x7F]/.test(rawKey),
+    secretHasCrLf: /[\r\n]/.test(rawKey),
+    secretHasWhitespace: /\s/.test(rawKey),
+    secretHasHeaderControl: /[\x00-\x1F\x7F]/.test(rawKey),
+    headerConstructOk: false,
+    requestConstructOk: false,
+    fetchStarted: false,
+    responseReceived: false,
+    httpStatus: null as number | null,
+    errorName: null as string | null,
+    networkCode: null as string | null,
+  };
+
+  const reply = (status: number) => Response.json(result, {status, headers: responseHeaders});
+  let baseUrl: URL;
+  try {
+    baseUrl = new URL(url);
+    result.urlParseOk = true;
+    result.isHttps = baseUrl.protocol === 'https:';
+    result.urlHasUsername = baseUrl.username !== '';
+    result.urlHasPassword = baseUrl.password !== '';
+    result.urlHasPath = baseUrl.pathname !== '/';
+    result.urlHasQuery = baseUrl.search !== '';
+    result.urlHasHash = baseUrl.hash !== '';
   } catch (error) {
-    return Response.json({ok: false, phase: 'fetch_throw', fetchStarted,
-      responseReceived, httpStatus: null, errorName: safeErrorName(error),
-      networkCode: safeNetworkCode(error)},
-    {status: 502, headers: responseHeaders});
+    result.errorName = safeErrorName(error);
+    return reply(502);
+  }
+
+  // Never send a server key to an invalid URL or to an origin with embedded credentials.
+  if (!result.isHttps || result.urlHasUsername || result.urlHasPassword ||
+      result.urlHasPath || result.urlHasQuery || result.urlHasHash) {
+    result.errorName = 'InvalidUrl';
+    return reply(502);
+  }
+
+  result.phase = 'header_construct';
+  if (!result.secretPresent) {
+    result.errorName = 'MissingConfig';
+    return reply(503);
+  }
+  let headers: Headers;
+  try {
+    headers = new Headers({apikey: secret, 'Content-Type': 'application/json'});
+    result.headerConstructOk = true;
+  } catch (error) {
+    result.errorName = safeErrorName(error);
+    return reply(502);
+  }
+
+  result.phase = 'request_construct';
+  let request: Request;
+  try {
+    const rpcUrl = new URL('/rest/v1/rpc/yg_connection_health', baseUrl);
+    request = new Request(rpcUrl, {
+      method: 'POST', headers, body: '{}', cache: 'no-store', redirect: 'manual',
+    });
+    result.requestConstructOk = true;
+  } catch (error) {
+    result.errorName = safeErrorName(error);
+    return reply(502);
+  }
+
+  result.phase = 'fetch';
+  try {
+    result.fetchStarted = true;
+    const response = await fetch(request);
+    result.responseReceived = true;
+    result.httpStatus = response.status;
+    result.ok = response.ok;
+    result.phase = 'http_response';
+    // Do not read or expose the response body, headers, request URL, or API key.
+    return reply(response.ok ? 200 : 502);
+  } catch (error) {
+    result.errorName = safeErrorName(error);
+    result.networkCode = safeNetworkCode(error);
+    return reply(502);
   }
 }
