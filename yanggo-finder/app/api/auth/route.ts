@@ -19,7 +19,7 @@ export async function POST(req:Request){try{
  if(action!=='login')throw Error('지원하지 않는 요청이에요.');
  // An old number remains usable for annual re-verification. Multiple matching
  // accounts never choose silently; all PIN matches are checked, ambiguity fails.
- const {data:identities,error}=await db().from('student_verifications').select('user_id,users!inner(display_name)').eq('student_number',number).eq('users.display_name',name).order('school_year',{ascending:false}).limit(20);
+ const {data:identities,error}=await db().from('student_verifications').select('user_id,users!student_verifications_user_id_fkey(display_name)').eq('student_number',number).eq('users.display_name',name).order('school_year',{ascending:false}).limit(20);
  if(error)throw Error('로그인 정보를 확인하지 못했어요.');const ids=[...new Set((identities||[]).map(i=>i.user_id))];
  const {data:credentials,error:ce}=ids.length?await db().from('pin_credentials').select('*').in('user_id',ids):{data:[],error:null};if(ce)throw Error('로그인 정보를 확인하지 못했어요.');let matched:string[]=[];
  for(const c of credentials||[])if(await verifyPin(pin,c.pin_hash))matched.push(c.user_id);
